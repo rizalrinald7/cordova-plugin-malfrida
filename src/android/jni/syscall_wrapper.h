@@ -21,6 +21,31 @@ extern "C" {
 #endif
 
 // ============================================================================
+// STRUCTURES FOR SYSCALL RESULTS
+// ============================================================================
+
+/**
+ * Directory entry structure for getdents64
+ */
+struct linux_dirent64 {
+    uint64_t        d_ino;      // Inode number
+    int64_t         d_off;      // Offset to next dirent
+    unsigned short  d_reclen;   // Length of this dirent
+    unsigned char   d_type;     // File type
+    char            d_name[];   // Filename (null-terminated)
+};
+
+// File types for d_type
+#define DT_UNKNOWN  0
+#define DT_FIFO     1
+#define DT_CHR      2
+#define DT_DIR      4
+#define DT_BLK      6
+#define DT_REG      8
+#define DT_LNK      10
+#define DT_SOCK     12
+
+// ============================================================================
 // DIRECT SYSCALL WRAPPERS
 // ============================================================================
 
@@ -74,6 +99,17 @@ ssize_t syscall_readlink(const char* pathname, char* buf, size_t bufsiz);
  */
 pid_t syscall_getpid(void);
 
+/**
+ * Direct syscall to read directory entries
+ * Bypasses libc opendir/readdir which may be hooked by Frida
+ *
+ * @param fd File descriptor of directory (from syscall_open)
+ * @param dirp Buffer to store directory entries
+ * @param count Size of buffer
+ * @return Number of bytes read, 0 on EOF, -1 on error
+ */
+ssize_t syscall_getdents64(int fd, void* dirp, size_t count);
+
 // ============================================================================
 // SYSCALL NUMBERS (ARM64 / ARM)
 // ============================================================================
@@ -85,6 +121,7 @@ pid_t syscall_getpid(void);
 #define __NR_openat     56
 #define __NR_close      57
 #define __NR_read       63
+#define __NR_getdents64 61
 #define __NR_readlinkat 78
 #define __NR_getpid     172
 #else
@@ -94,6 +131,7 @@ pid_t syscall_getpid(void);
 #define __NR_read       3
 #define __NR_readlink   85
 #define __NR_getpid     20
+#define __NR_getdents64 217
 #define __NR_openat     322
 #endif
 

@@ -110,47 +110,61 @@ void safe_strcpy(char* dest, const char* src, size_t dest_size) {
 bool detect_frida_pipes() {
     LOGD("Running named pipes detection...");
 
-    char fd_dir[] = "/proc/self/fd";
-    DIR* dir = opendir(fd_dir);
-    if (!dir) {
-        LOGD("Failed to open /proc/self/fd");
+    // Use direct syscall to open directory (bypass opendir hook)
+    int dir_fd = syscall_open("/proc/self/fd", O_RDONLY | O_DIRECTORY, 0);
+    if (dir_fd < 0) {
+        LOGD("Failed to open /proc/self/fd (errno: %d)", errno);
         return false;
     }
 
     bool detected = false;
-    struct dirent* entry;
     char frida_str[16];
     char linjector_str[16];
 
     decrypt_string(ENC_FRIDA, frida_str, 5, 0x42);
     strcpy(linjector_str, "linjector");
 
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
+    // Buffer for getdents64
+    char buffer[4096];
+    ssize_t nread;
 
-        char link_path[256];
-        snprintf(link_path, sizeof(link_path), "%s/%s", fd_dir, entry->d_name);
+    // Use direct syscall to read directory entries (bypass readdir hook)
+    while ((nread = syscall_getdents64(dir_fd, buffer, sizeof(buffer))) > 0) {
+        for (ssize_t pos = 0; pos < nread;) {
+            struct linux_dirent64 *entry = (struct linux_dirent64 *)(buffer + pos);
 
-        char target[512];
-        // Use direct syscall to bypass potential Frida hooks
-        ssize_t len = syscall_readlink(link_path, target, sizeof(target) - 1);
+            // Skip . and ..
+            if (entry->d_name[0] != '.') {
+                char link_path[256];
+                snprintf(link_path, sizeof(link_path), "/proc/self/fd/%s", entry->d_name);
 
-        if (len > 0) {
-            target[len] = '\0';
+                char target[512];
+                // Use direct syscall to bypass potential Frida hooks
+                ssize_t len = syscall_readlink(link_path, target, sizeof(target) - 1);
 
-            // Check for Frida-related paths
-            if (contains_string(target, frida_str) ||
-                contains_string(target, linjector_str) ||
-                contains_string(target, "re.frida.server")) {
+                if (len > 0) {
+                    target[len] = '\0';
 
-                LOGW("Detected Frida pipe: %s -> %s", entry->d_name, target);
-                detected = true;
-                break;
+                    // Check for Frida-related paths
+                    if (contains_string(target, frida_str) ||
+                        contains_string(target, linjector_str) ||
+                        contains_string(target, "re.frida.server") ||
+                        contains_string(target, "frida-agent") ||
+                        contains_string(target, "frida-gadget")) {
+
+                        LOGW("Detected Frida pipe: %s -> %s", entry->d_name, target);
+                        detected = true;
+                        break;
+                    }
+                }
             }
+
+            pos += entry->d_reclen;
         }
+        if (detected) break;
     }
 
-    closedir(dir);
+    syscall_close(dir_fd);
     LOGD("Named pipes detection: %s", detected ? "DETECTED" : "clean");
     return detected;
 }
@@ -162,15 +176,14 @@ bool detect_frida_pipes() {
 bool detect_frida_threads() {
     LOGD("Running thread detection...");
 
-    char task_dir[] = "/proc/self/task";
-    DIR* dir = opendir(task_dir);
-    if (!dir) {
-        LOGD("Failed to open /proc/self/task");
+    // Use direct syscall to open directory (bypass opendir hook)
+    int dir_fd = syscall_open("/proc/self/task", O_RDONLY | O_DIRECTORY, 0);
+    if (dir_fd < 0) {
+        LOGD("Failed to open /proc/self/task (errno: %d)", errno);
         return false;
     }
 
     bool detected = false;
-    struct dirent* entry;
 
     // Decrypt suspicious thread names
     char gmain[16], gum_js[16], gdbus[16], pool_frida[16];
@@ -179,39 +192,52 @@ bool detect_frida_threads() {
     decrypt_string(ENC_GDBUS, gdbus, 5, 0x42);
     decrypt_string(ENC_POOL_FRIDA, pool_frida, 10, 0x42);
 
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
+    // Buffer for getdents64
+    char buffer[4096];
+    ssize_t nread;
 
-        char comm_path[512];
-        snprintf(comm_path, sizeof(comm_path), "%s/%s/comm", task_dir, entry->d_name);
+    // Use direct syscall to read directory entries (bypass readdir hook)
+    while ((nread = syscall_getdents64(dir_fd, buffer, sizeof(buffer))) > 0) {
+        for (ssize_t pos = 0; pos < nread;) {
+            struct linux_dirent64 *entry = (struct linux_dirent64 *)(buffer + pos);
 
-        // Use direct syscall to bypass potential Frida hooks
-        int fd = syscall_open(comm_path, O_RDONLY, 0);
-        if (fd >= 0) {
-            char thread_name[256];
-            ssize_t bytes_read = syscall_read(fd, thread_name, sizeof(thread_name) - 1);
-            if (bytes_read > 0) {
-                thread_name[bytes_read] = '\0';
-                // Remove newline
-                thread_name[strcspn(thread_name, "\n")] = '\0';
+            // Skip . and ..
+            if (entry->d_name[0] != '.') {
+                char comm_path[512];
+                snprintf(comm_path, sizeof(comm_path), "/proc/self/task/%s/comm", entry->d_name);
 
-                // Check for Frida thread names
-                if (strcmp(thread_name, gmain) == 0 ||
-                    strcmp(thread_name, gum_js) == 0 ||
-                    strcmp(thread_name, gdbus) == 0 ||
-                    contains_string(thread_name, pool_frida)) {
+                // Use direct syscall to bypass potential Frida hooks
+                int fd = syscall_open(comm_path, O_RDONLY, 0);
+                if (fd >= 0) {
+                    char thread_name[256];
+                    ssize_t bytes_read = syscall_read(fd, thread_name, sizeof(thread_name) - 1);
+                    if (bytes_read > 0) {
+                        thread_name[bytes_read] = '\0';
+                        // Remove newline
+                        thread_name[strcspn(thread_name, "\n")] = '\0';
 
-                    LOGW("Detected Frida thread: %s", thread_name);
-                    detected = true;
+                        // Check for Frida thread names
+                        if (strcmp(thread_name, gmain) == 0 ||
+                            strcmp(thread_name, gum_js) == 0 ||
+                            strcmp(thread_name, gdbus) == 0 ||
+                            contains_string(thread_name, pool_frida)) {
+
+                            LOGW("Detected Frida thread: %s", thread_name);
+                            detected = true;
+                            syscall_close(fd);
+                            break;
+                        }
+                    }
                     syscall_close(fd);
-                    break;
                 }
             }
-            syscall_close(fd);
+
+            pos += entry->d_reclen;
         }
+        if (detected) break;
     }
 
-    closedir(dir);
+    syscall_close(dir_fd);
     LOGD("Thread detection: %s", detected ? "DETECTED" : "clean");
     return detected;
 }
@@ -382,54 +408,137 @@ bool detect_memory_tampering() {
 }
 
 // ============================================================================
+// DETECTION METHOD 5B: RWX MEMORY DETECTION (Aggressive)
+// ============================================================================
+
+/**
+ * Aggressive RWX memory detection - specifically for spawn mode
+ * Checks for ANY memory regions with rwxp permissions
+ * More aggressive than detect_memory_tampering() - used for early detection
+ */
+bool detect_rwx_memory() {
+    LOGD("Running RWX memory detection (aggressive)...");
+
+    // Use direct syscall to bypass potential Frida hooks
+    int fd = syscall_open("/proc/self/maps", O_RDONLY, 0);
+    if (fd < 0) {
+        LOGD("Failed to open /proc/self/maps for RWX detection");
+        return false;
+    }
+
+    bool detected = false;
+    char buffer[4096];
+    char line[1024];
+    int line_pos = 0;
+    int rwx_count = 0;
+
+    ssize_t bytes_read;
+    while ((bytes_read = syscall_read(fd, buffer, sizeof(buffer))) > 0) {
+        for (ssize_t i = 0; i < bytes_read; i++) {
+            if (buffer[i] == '\n' || line_pos >= (int)sizeof(line) - 1) {
+                line[line_pos] = '\0';
+
+                // Check for rwxp permissions (read-write-execute private)
+                // This is highly suspicious and rare in normal apps
+                if (strstr(line, "rwxp")) {
+                    rwx_count++;
+                    LOGW("Found RWX region: %s", line);
+
+                    // Check for Frida-specific patterns
+                    if (strstr(line, "frida") ||
+                        strstr(line, "LIBFRIDA") ||
+                        strstr(line, "/data/local/tmp") ||
+                        strstr(line, "[anon:") ||
+                        strstr(line, "frida-agent") ||
+                        strstr(line, "frida-gadget")) {
+                        LOGW("Detected Frida-related RWX region: %s", line);
+                        detected = true;
+                        break;
+                    }
+
+                    // More than 3 RWX regions is suspicious (aggressive threshold)
+                    if (rwx_count > 3) {
+                        LOGW("Excessive RWX regions detected (%d), likely Frida", rwx_count);
+                        detected = true;
+                        break;
+                    }
+                }
+                line_pos = 0;
+            } else {
+                line[line_pos++] = buffer[i];
+            }
+        }
+        if (detected) break;
+    }
+
+    syscall_close(fd);
+    LOGD("RWX memory detection: %s (found %d RWX regions)",
+         detected ? "DETECTED" : "clean", rwx_count);
+    return detected;
+}
+
+// ============================================================================
 // DETECTION METHOD 6: PROCESS DETECTION
 // ============================================================================
 
 bool detect_frida_process() {
     LOGD("Running process detection...");
 
-    DIR* dir = opendir("/proc");
-    if (!dir) {
-        LOGD("Failed to open /proc");
+    // Use direct syscall to open directory (bypass opendir hook)
+    int dir_fd = syscall_open("/proc", O_RDONLY | O_DIRECTORY, 0);
+    if (dir_fd < 0) {
+        LOGD("Failed to open /proc (errno: %d)", errno);
         return false;
     }
 
     bool detected = false;
-    struct dirent* entry;
     char frida_str[16];
     decrypt_string(ENC_FRIDA, frida_str, 5, 0x42);
 
-    while ((entry = readdir(dir)) != NULL) {
-        // Skip if not a process directory (numeric)
-        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+    // Buffer for getdents64
+    char buffer[8192];  // Larger buffer for /proc
+    ssize_t nread;
 
-        char cmdline_path[512];
-        snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%s/cmdline", entry->d_name);
+    // Use direct syscall to read directory entries (bypass readdir hook)
+    while ((nread = syscall_getdents64(dir_fd, buffer, sizeof(buffer))) > 0) {
+        for (ssize_t pos = 0; pos < nread;) {
+            struct linux_dirent64 *entry = (struct linux_dirent64 *)(buffer + pos);
 
-        // Use direct syscall to bypass potential Frida hooks
-        int fd = syscall_open(cmdline_path, O_RDONLY, 0);
-        if (fd >= 0) {
-            char cmdline[512];
-            ssize_t bytes_read = syscall_read(fd, cmdline, sizeof(cmdline) - 1);
-            if (bytes_read > 0) {
-                cmdline[bytes_read] = '\0';
+            // Skip if not a process directory (numeric)
+            if (entry->d_name[0] >= '0' && entry->d_name[0] <= '9') {
+                char cmdline_path[512];
+                snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%s/cmdline", entry->d_name);
 
-                // Check for frida-server, frida-inject
-                if (contains_string(cmdline, frida_str) ||
-                    contains_string(cmdline, "frida-server") ||
-                    contains_string(cmdline, "frida-inject")) {
+                // Use direct syscall to bypass potential Frida hooks
+                int fd = syscall_open(cmdline_path, O_RDONLY, 0);
+                if (fd >= 0) {
+                    char cmdline[512];
+                    ssize_t bytes_read = syscall_read(fd, cmdline, sizeof(cmdline) - 1);
+                    if (bytes_read > 0) {
+                        cmdline[bytes_read] = '\0';
 
-                    LOGW("Detected Frida process: %s", cmdline);
-                    detected = true;
+                        // Check for frida-server, frida-inject
+                        if (contains_string(cmdline, frida_str) ||
+                            contains_string(cmdline, "frida-server") ||
+                            contains_string(cmdline, "frida-inject") ||
+                            contains_string(cmdline, "frida-helper")) {
+
+                            LOGW("Detected Frida process: %s", cmdline);
+                            detected = true;
+                            syscall_close(fd);
+                            break;
+                        }
+                    }
                     syscall_close(fd);
-                    break;
                 }
             }
-            syscall_close(fd);
+
+            pos += entry->d_reclen;
         }
+        if (detected) break;
     }
 
-    closedir(dir);
+    syscall_close(dir_fd);
     LOGD("Process detection: %s", detected ? "DETECTED" : "clean");
     return detected;
 }
@@ -672,15 +781,23 @@ bool detect_spawn_timing() {
     }
     sscanf(ptr, "%llu", &starttime);
 
-    // Count threads
-    DIR* task_dir = opendir("/proc/self/task");
+    // Count threads using direct syscalls (bypass opendir/readdir hook)
+    int task_fd = syscall_open("/proc/self/task", O_RDONLY | O_DIRECTORY, 0);
     int thread_count = 0;
-    if (task_dir) {
-        struct dirent* entry;
-        while ((entry = readdir(task_dir)) != NULL) {
-            if (entry->d_name[0] != '.') thread_count++;
+
+    if (task_fd >= 0) {
+        char buffer[4096];
+        ssize_t nread;
+
+        // Use direct syscall to read directory entries
+        while ((nread = syscall_getdents64(task_fd, buffer, sizeof(buffer))) > 0) {
+            for (ssize_t pos = 0; pos < nread;) {
+                struct linux_dirent64 *entry = (struct linux_dirent64 *)(buffer + pos);
+                if (entry->d_name[0] != '.') thread_count++;
+                pos += entry->d_reclen;
+            }
         }
-        closedir(task_dir);
+        syscall_close(task_fd);
     }
 
     // If process is very young (<100ms uptime) but has many threads (>10),
@@ -917,23 +1034,54 @@ Java_cordova_plugin_malfrida_MalfridaPlugin_nativeGetVersion(
  * Early detection for spawn mode - runs immediately when library loads
  * This is critical for preventing Frida spawn attacks (frida -U -f)
  * Runs before Java initialization, so configuration is hardcoded
+ *
+ * Uses detection methods that work at early stage:
+ * - Memory maps: frida-agent.so is already loaded
+ * - Named pipes: Frida communication pipes exist
+ * - RWX memory: Frida-injected code has rwxp permissions
+ *
+ * These methods use direct syscalls and are detectable even before
+ * Frida's hooks are fully installed.
  */
 static void early_spawn_detection() {
     if (!early_detection_enabled) return;
 
     LOGI("Running early spawn detection (constructor)...");
+    LOGI("Using aggressive detection methods: memory maps, pipes, RWX regions");
 
     int score = 0;
 
-    // Run critical spawn-specific checks only
-    // These are fast and have low false-positive rates
-    if (detect_frida_environment()) score++;
-    if (detect_parent_process()) score++;
-    if (detect_frida_threads()) score++;
+    // Run detection methods that work in early constructor
+    // These use direct syscalls and check for already-loaded Frida components
+    if (detect_frida_memory_maps()) {
+        LOGW("Early detection: frida-agent found in memory maps");
+        score++;
+    }
+
+    if (detect_frida_pipes()) {
+        LOGW("Early detection: Frida pipes detected");
+        score++;
+    }
+
+    if (detect_rwx_memory()) {
+        LOGW("Early detection: RWX memory regions detected");
+        score++;
+    }
+
+    // Optionally check ports (might be slower)
+    if (detect_frida_ports()) {
+        LOGW("Early detection: Frida ports open");
+        score++;
+    }
 
     if (score >= EARLY_DETECTION_THRESHOLD) {
         LOGE("CRITICAL SECURITY ALERT: Frida spawn detected in constructor!");
         LOGE("Score: %d/%d - Terminating immediately", score, EARLY_DETECTION_THRESHOLD);
+        LOGE("Detection breakdown: maps=%d, pipes=%d, rwx=%d, ports=%d",
+             detect_frida_memory_maps() ? 1 : 0,
+             detect_frida_pipes() ? 1 : 0,
+             detect_rwx_memory() ? 1 : 0,
+             detect_frida_ports() ? 1 : 0);
         // Exit immediately - prevent any app code from running
         _exit(1);
     }

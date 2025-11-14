@@ -121,6 +121,16 @@ bool detect_frida_ports();
 bool detect_memory_tampering();
 
 /**
+ * Method 5B: RWX Memory Detection (Aggressive)
+ * Checks for ANY memory regions with rwxp permissions
+ * More aggressive than detect_memory_tampering()
+ * Specifically designed for spawn mode early detection
+ *
+ * @return true if suspicious RWX regions detected
+ */
+bool detect_rwx_memory();
+
+/**
  * Method 6: Process Detection
  * Scans /proc for frida-server process
  *

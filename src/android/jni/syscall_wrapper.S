@@ -71,6 +71,14 @@ syscall_getpid:
     svc #0
     ret
 
+/* ssize_t syscall_getdents64(int fd, void* dirp, size_t count) */
+.global syscall_getdents64
+.type syscall_getdents64, @function
+syscall_getdents64:
+    mov x8, #61             /* __NR_getdents64 */
+    svc #0
+    ret
+
 #elif defined(__arm__)
 /* ============================================================================
  * ARM (32-bit) Syscall Implementation
@@ -135,6 +143,16 @@ syscall_readlink:
 syscall_getpid:
     push    {r7}
     mov     r7, #20         /* __NR_getpid */
+    svc     #0
+    pop     {r7}
+    bx      lr
+
+/* ssize_t syscall_getdents64(int fd, void* dirp, size_t count) */
+.global syscall_getdents64
+.type syscall_getdents64, %function
+syscall_getdents64:
+    push    {r7}
+    mov     r7, #217        /* __NR_getdents64 */
     svc     #0
     pop     {r7}
     bx      lr
@@ -207,6 +225,18 @@ syscall_getpid:
     int     $0x80
     ret
 
+.global syscall_getdents64
+.type syscall_getdents64, @function
+syscall_getdents64:
+    push    %ebx
+    mov     8(%esp), %ebx   /* fd */
+    mov     12(%esp), %ecx  /* dirp */
+    mov     16(%esp), %edx  /* count */
+    mov     $220, %eax      /* __NR_getdents64 */
+    int     $0x80
+    pop     %ebx
+    ret
+
 #elif defined(__x86_64__)
 /* ============================================================================
  * x86_64 (64-bit) Syscall Implementation
@@ -262,6 +292,13 @@ syscall_readlink:
 .type syscall_getpid, @function
 syscall_getpid:
     mov     $39, %rax       /* __NR_getpid */
+    syscall
+    ret
+
+.global syscall_getdents64
+.type syscall_getdents64, @function
+syscall_getdents64:
+    mov     $217, %rax      /* __NR_getdents64 */
     syscall
     ret
 

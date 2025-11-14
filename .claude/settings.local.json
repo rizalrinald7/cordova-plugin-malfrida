@@ -7,7 +7,9 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:cordova.apache.org)",
       "WebFetch(domain:blog.nviso.eu)",
-      "WebFetch(domain:reverseengineering.stackexchange.com)"
+      "WebFetch(domain:reverseengineering.stackexchange.com)",
+      "WebFetch(domain:qweraqq.github.io)",
+      "WebFetch(domain:darvincitech.wordpress.com)"
     ],
     "deny": [],
     "ask": []

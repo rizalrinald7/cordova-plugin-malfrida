@@ -79,12 +79,12 @@ ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=Android.mk
 
 #### Standard Detection Methods (1-8)
 
-1. **Named Pipes** - Scans `/proc/self/fd` for Frida FIFOs using `syscall_readlink()`
-2. **Thread Names** - Detects `gmain`, `gum-js-loop`, `gdbus`, `pool-frida` using `syscall_read()`
+1. **Named Pipes** - Scans `/proc/self/fd` for Frida FIFOs using `syscall_getdents64()` + `syscall_readlink()`
+2. **Thread Names** - Detects `gmain`, `gum-js-loop`, `gdbus`, `pool-frida` using `syscall_getdents64()` + `syscall_read()`
 3. **Memory Mapping** - Scans `/proc/self/maps` for `frida-agent`, `frida-gadget` using `syscall_read()`
 4. **Port Scanning** - Checks ports 27042, 27043
 5. **Memory Tampering** - Detects RWX memory regions in executables using `syscall_read()`
-6. **Process Detection** - Scans `/proc` for `frida-server` using `syscall_read()`
+6. **Process Detection** - Scans `/proc` for `frida-server` using `syscall_getdents64()` + `syscall_read()`
 7. **Ptrace Detection** - Checks `/proc/self/status` for TracerPid using `syscall_read()`
 8. **Symbol Scanning** - Looks for Frida symbols in loaded libraries using `syscall_read()`
 
@@ -92,7 +92,15 @@ ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=Android.mk
 
 9. **Environment Variables** - Checks `/proc/self/environ` for `FRIDA_*` and `LD_PRELOAD` using `syscall_read()`
 10. **Parent Process Check** - Verifies parent process isn't Frida/gdbserver using `syscall_read()`
-11. **Spawn Timing Check** - Detects suspicious thread counts at early startup
+11. **Spawn Timing Check** - Detects suspicious thread counts at early startup using `syscall_getdents64()`
+
+#### Early Detection Helper Method
+
+**RWX Memory Detection (Aggressive)** - Used in early spawn detection
+- Scans `/proc/self/maps` for ANY rwxp (read-write-execute) memory regions
+- More aggressive than standard memory tampering detection
+- Checks for Frida-specific patterns in memory regions
+- Counts excessive RWX regions (>3 triggers detection)
 
 ### Build System
 
@@ -114,14 +122,23 @@ ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=Android.mk
 - Core detection logic with configurable threshold
 - **Early spawn detection** in `on_load()` constructor using `__attribute__((constructor))`
 - JSON result generation for detailed detection info (11 detection methods)
-- **All file I/O uses direct syscalls** - `syscall_open()`, `syscall_read()`, `syscall_readlink()`, `syscall_close()`
-- Early detection runs 3 critical checks: environment, parent process, threads
+- **ALL file operations use direct syscalls** - no libc functions called
+  - File I/O: `syscall_open()`, `syscall_read()`, `syscall_close()`, `syscall_readlink()`
+  - **Directory reading**: `syscall_getdents64()` - replaced ALL `opendir/readdir` calls
+- Early detection runs 4 critical checks: memory maps, pipes, RWX regions, ports
 - Early detection threshold: 1 (any detection triggers immediate `_exit(1)`)
 
-**syscall_wrapper.S**:
-- Assembly implementations for direct syscalls
-- Architecture-specific syscall numbers (ARM, ARM64, x86, x86_64)
-- **ACTIVELY USED** to bypass Frida hooks on `open()`, `read()`, `readlink()`, `close()`
+**syscall_wrapper.S/.h**:
+- Assembly implementations for direct syscalls in 4 architectures (ARM, ARM64, x86, x86_64)
+- Implemented syscalls:
+  - `syscall_open()` / `syscall_openat()` - file/directory opening
+  - `syscall_read()` - file reading
+  - `syscall_close()` - file closing
+  - `syscall_readlink()` / `syscall_readlinkat()` - symbolic link reading
+  - `syscall_getpid()` - process ID retrieval
+  - **`syscall_getdents64()`** - directory entry reading (NEW)
+- **ACTIVELY USED EVERYWHERE** - Zero libc calls for file operations
+- Includes `linux_dirent64` struct definition for directory parsing
 - Critical for spawn mode prevention
 
 ## Native Library Details
@@ -200,26 +217,37 @@ function(err) { console.error(err); }
 
 1. **Early Detection in Constructor** - Runs in `on_load()` with `__attribute__((constructor))`
    - Executes BEFORE `JNI_OnLoad()`, BEFORE Java initialization
-   - Runs 3 critical checks: environment vars, parent process, thread names
+   - Runs 4 critical checks using direct syscalls:
+     * **Memory maps**: Detects frida-agent.so/frida-gadget.so in `/proc/self/maps`
+     * **Named pipes**: Scans `/proc/self/fd` for Frida communication pipes
+     * **RWX memory**: Detects suspicious rwxp (read-write-execute) memory regions
+     * **Ports**: Checks if Frida ports 27042/27043 are open
    - Threshold: 1 (any single detection triggers immediate `_exit(1)`)
    - Cannot be bypassed by configuration (hardcoded for security)
 
-2. **Direct Syscalls** - All `/proc` file I/O uses `syscall_wrapper.S`
-   - `syscall_open()`, `syscall_read()`, `syscall_close()`, `syscall_readlink()`
-   - Bypasses libc hooks that Frida might install
+2. **Direct Syscalls** - All file operations use assembly syscalls in `syscall_wrapper.S`
+   - `syscall_open()`, `syscall_read()`, `syscall_close()`, `syscall_readlink()`, `syscall_getdents64()`
+   - **Replaced ALL opendir/readdir calls** - Now uses `getdents64` syscall for directory reading
+   - Bypasses libc hooks that Frida might install (including `opendir`, `readdir`, `fopen`, `read`)
    - Makes detection significantly harder to bypass
 
 3. **Timeline**:
    ```
    App Launch (frida -U -f)
      ↓
-   [T+0ms] System.loadLibrary() loads native library
+   [T+0ms] Frida spawns app, injects frida-agent.so (app suspended)
      ↓
-   [T+1ms] __attribute__((constructor)) on_load() runs
+   [T+5ms] System.loadLibrary() loads native library
      ↓
-   [T+2ms] Early spawn detection (3 checks, direct syscalls)
+   [T+6ms] __attribute__((constructor)) on_load() runs
      ↓
-   [IF DETECTED] _exit(1) - app terminates immediately
+   [T+7ms] Early spawn detection (4 checks, all using direct syscalls):
+           - Scans /proc/self/maps for frida-agent.so
+           - Scans /proc/self/fd for Frida pipes
+           - Checks for rwxp memory regions
+           - Tests Frida ports 27042/27043
+     ↓
+   [IF DETECTED] _exit(1) - app terminates immediately (BEFORE Frida fully activates)
      ↓
    [IF CLEAN] Constructor completes, Java initialization continues
      ↓
