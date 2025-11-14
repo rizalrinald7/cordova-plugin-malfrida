@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
+        xmlns:android="http://schemas.android.com/apk/res/android"
+        id="cordova-plugin-malfrida"
+        version="1.0.0">
+
+    <name>Malfrida</name>
+    <description>Advanced Frida detection plugin for Cordova Android applications. Detects and prevents Frida instrumentation attacks using multiple detection vectors.</description>
+    <license>Apache 2.0</license>
+    <keywords>cordova,frida,security,detection,anti-frida,instrumentation,outsystems</keywords>
+    <repo>https://github.com/rizalrinald7/cordova-plugin-malfrida</repo>
+    <issues>https://github.com/rizalrinald7/cordova-plugin-malfrida/issues</issues>
+
+    <author>Security Team</author>
+
+    <engines>
+        <engine name="cordova" version=">=10.0.0" />
+        <engine name="cordova-android" version=">=10.0.0" />
+    </engines>
+
+    <!-- JavaScript Interface -->
+    <js-module src="www/malfrida.js" name="Malfrida">
+        <clobbers target="cordova.plugins.malfrida" />
+    </js-module>
+
+    <!-- Android Platform Configuration -->
+    <platform name="android">
+        <!-- Minimum Android SDK version -->
+        <preference name="ANDROID_MIN_SDK_VERSION" default="21" />
+
+        <!-- Register native plugin -->
+        <config-file target="res/xml/config.xml" parent="/*">
+            <feature name="Malfrida">
+                <param name="android-package" value="cordova.plugin.malfrida.MalfridaPlugin"/>
+                <param name="onload" value="true" />
+            </feature>
+        </config-file>
+
+        <!-- Permissions (if needed for network checks) -->
+        <config-file target="AndroidManifest.xml" parent="/*">
+            <uses-permission android:name="android.permission.INTERNET" />
+        </config-file>
+
+        <!-- Java source files -->
+        <source-file src="src/android/MalfridaPlugin.java"
+                     target-dir="src/cordova/plugin/malfrida" />
+
+        <!-- Native C++ library -->
+        <source-file src="src/android/cpp/frida_detector.h"
+                     target-dir="cpp" />
+        <source-file src="src/android/cpp/frida_detector.cpp"
+                     target-dir="cpp" />
+        <source-file src="src/android/cpp/syscall_wrapper.h"
+                     target-dir="cpp" />
+        <source-file src="src/android/cpp/syscall_wrapper.S"
+                     target-dir="cpp" />
+
+        <!-- CMake build configuration -->
+        <source-file src="src/android/cpp/CMakeLists.txt"
+                     target-dir="cpp" />
+
+        <!-- Gradle configuration -->
+        <framework src="src/android/malfrida.gradle"
+                   custom="true"
+                   type="gradleReference" />
+    </platform>
+</plugin>

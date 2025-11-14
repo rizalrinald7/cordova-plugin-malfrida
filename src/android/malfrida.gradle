@@ -1,0 +1,260 @@
+/**
+ * Gradle Build Configuration for Malfrida Plugin
+ *
+ * Configures Android build settings, NDK, ProGuard, and native library compilation
+ *
+ * @author Security Team
+ * @version 1.0.0
+ */
+
+// ============================================================================
+// Android Configuration
+// ============================================================================
+
+android {
+    // Compile SDK version
+    compileSdkVersion 33
+
+    defaultConfig {
+        // Minimum SDK version (Android 5.0 Lollipop)
+        minSdkVersion 21
+
+        // Target SDK version
+        targetSdkVersion 33
+
+        // NDK Configuration
+        ndk {
+            // Support all major architectures
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+        }
+
+        // External native build settings
+        externalNativeBuild {
+            cmake {
+                // CMake arguments
+                arguments "-DANDROID_STL=c++_static",
+                          "-DANDROID_PLATFORM=android-21",
+                          "-DCMAKE_BUILD_TYPE=Release"
+
+                // C++ flags
+                cppFlags "-std=c++14",
+                         "-fvisibility=hidden",
+                         "-ffunction-sections",
+                         "-fdata-sections",
+                         "-O3"
+
+                // C flags
+                cFlags "-std=c11",
+                       "-fvisibility=hidden",
+                       "-O3"
+
+                // Additional targets
+                targets "frida_detector"
+            }
+        }
+    }
+
+    // External native build configuration
+    externalNativeBuild {
+        cmake {
+            path "cpp/CMakeLists.txt"
+            version "3.10.2"
+        }
+    }
+
+    // Build types
+    buildTypes {
+        release {
+            // Enable minification and obfuscation
+            minifyEnabled true
+
+            // Shrink resources
+            shrinkResources false
+
+            // ProGuard configuration
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                          'proguard-rules.pro'
+
+            // Native debugging disabled for release
+            debuggable false
+            jniDebuggable false
+
+            // Strip native debug symbols
+            ndk {
+                debugSymbolLevel 'none'
+            }
+        }
+
+        debug {
+            // Debug build settings
+            minifyEnabled false
+            debuggable true
+            jniDebuggable true
+
+            // Keep debug symbols for native code
+            ndk {
+                debugSymbolLevel 'full'
+            }
+        }
+    }
+
+    // Packaging options
+    packagingOptions {
+        // Exclude unnecessary files
+        exclude 'META-INF/LICENSE'
+        exclude 'META-INF/NOTICE'
+        exclude 'META-INF/LICENSE.txt'
+        exclude 'META-INF/NOTICE.txt'
+    }
+
+    // Lint options
+    lintOptions {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    // Compile options
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+// ============================================================================
+// ProGuard Rules (Inline)
+// ============================================================================
+
+// Create proguard-rules.pro if it doesn't exist
+task createProguardRules {
+    doLast {
+        def proguardFile = new File(projectDir, 'proguard-rules.pro')
+        if (!proguardFile.exists()) {
+            proguardFile.text = '''
+# Malfrida Plugin ProGuard Rules
+# Keep plugin interface and native methods
+
+# Keep the plugin class and all public methods
+-keep class cordova.plugin.malfrida.MalfridaPlugin {
+    public *;
+    native <methods>;
+}
+
+# Keep all native methods across the app
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# Keep Cordova plugin interfaces
+-keep class org.apache.cordova.** { *; }
+-dontwarn org.apache.cordova.**
+
+# Aggressive obfuscation
+-repackageclasses 'o'
+-allowaccessmodification
+-overloadaggressively
+
+# Optimize
+-optimizations !code/simplification/arithmetic,!code/simplification/cast,!field/*,!class/merging/*
+-optimizationpasses 5
+
+# Keep line numbers for debugging stack traces
+-keepattributes SourceFile,LineNumberTable
+
+# Remove logging (optional - uncomment for release)
+# -assumenosideeffects class android.util.Log {
+#     public static *** d(...);
+#     public static *** v(...);
+#     public static *** i(...);
+# }
+
+# Keep exceptions
+-keepattributes *Annotation*
+-keepattributes Signature
+-keepattributes Exceptions
+'''
+        }
+    }
+}
+
+// Run proguard rules creation before pre-build
+preBuild.dependsOn createProguardRules
+
+// ============================================================================
+// Dependencies (if needed)
+// ============================================================================
+
+dependencies {
+    // No external dependencies required
+}
+
+// ============================================================================
+// Custom Tasks
+// ============================================================================
+
+// Task to verify native library was built
+task verifyNativeLibrary {
+    doLast {
+        def found = false
+        ['armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'].each { abi ->
+            def libPath = new File(projectDir, "../../libs/${abi}/libfrida_detector.so")
+            if (libPath.exists()) {
+                println " Found native library for ${abi}"
+                found = true
+            }
+        }
+
+        if (!found) {
+            println "  Warning: No native libraries found. They will be built during compilation."
+        }
+    }
+}
+
+// Run verification after assembly
+assembleDebug.finalizedBy verifyNativeLibrary
+assembleRelease.finalizedBy verifyNativeLibrary
+
+// ============================================================================
+// Build Information
+// ============================================================================
+
+task printBuildInfo {
+    doLast {
+        println ""
+        println "=================================================="
+        println "Malfrida Plugin Build Configuration"
+        println "=================================================="
+        println "Plugin Version:      1.0.0"
+        println "Min SDK Version:     21 (Android 5.0)"
+        println "Target SDK Version:  33"
+        println "Compile SDK Version: 33"
+        println "NDK Enabled:         Yes"
+        println "Supported ABIs:      armeabi-v7a, arm64-v8a, x86, x86_64"
+        println "ProGuard:            Enabled (Release)"
+        println "Native Library:      libfrida_detector.so"
+        println "=================================================="
+        println ""
+    }
+}
+
+// Print build info before build starts
+preBuild.dependsOn printBuildInfo
+
+// ============================================================================
+// Security Notes
+// ============================================================================
+
+/*
+ * SECURITY NOTES:
+ *
+ * 1. ProGuard is enabled for release builds to obfuscate Java code
+ * 2. Native code is compiled with maximum optimization and symbol stripping
+ * 3. All architectures are supported for maximum device coverage
+ * 4. Debug symbols are stripped in release builds
+ * 5. Stack protection and other security flags are enabled via CMake
+ *
+ * For maximum security:
+ * - Use O-LLVM for native code obfuscation (requires custom toolchain)
+ * - Enable additional ProGuard optimizations
+ * - Consider certificate pinning if communicating with servers
+ * - Implement additional runtime integrity checks
+ */

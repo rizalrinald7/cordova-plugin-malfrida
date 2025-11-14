@@ -1,0 +1,42 @@
+{
+  "name": "cordova-plugin-malfrida",
+  "version": "1.0.0",
+  "description": "Advanced Frida detection plugin for Cordova Android applications. Detects and prevents Frida instrumentation attacks using multiple detection vectors including named pipes, thread detection, memory scanning, port scanning, and more.",
+  "main": "www/malfrida.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "cordova",
+    "cordova-android",
+    "frida",
+    "security",
+    "detection",
+    "anti-frida",
+    "instrumentation",
+    "outsystems",
+    "mobile-security",
+    "runtime-protection"
+  ],
+  "author": "Security Team",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "cordova": {
+    "id": "cordova-plugin-malfrida",
+    "platforms": [
+      "android"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rizalrinald7/cordova-plugin-malfrida.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rizalrinald7/cordova-plugin-malfrida/issues"
+  },
+  "homepage": "https://github.com/rizalrinald7/cordova-plugin-malfrida#readme",
+  "engines": {
+    "cordova": ">=10.0.0",
+    "cordova-android": ">=10.0.0"
+  }
+}
