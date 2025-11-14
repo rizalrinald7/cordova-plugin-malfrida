@@ -46,18 +46,20 @@
                      target-dir="src/cordova/plugin/malfrida" />
 
         <!-- Native C++ library -->
-        <source-file src="src/android/cpp/frida_detector.h"
-                     target-dir="cpp" />
-        <source-file src="src/android/cpp/frida_detector.cpp"
-                     target-dir="cpp" />
-        <source-file src="src/android/cpp/syscall_wrapper.h"
-                     target-dir="cpp" />
-        <source-file src="src/android/cpp/syscall_wrapper.S"
-                     target-dir="cpp" />
+        <source-file src="src/android/jni/frida_detector.h"
+                     target-dir="src/main/jni" />
+        <source-file src="src/android/jni/frida_detector.cpp"
+                     target-dir="src/main/jni" />
+        <source-file src="src/android/jni/syscall_wrapper.h"
+                     target-dir="src/main/jni" />
+        <source-file src="src/android/jni/syscall_wrapper.S"
+                     target-dir="src/main/jni" />
 
-        <!-- CMake build configuration -->
-        <source-file src="src/android/cpp/CMakeLists.txt"
-                     target-dir="cpp" />
+        <!-- NDK build configuration -->
+        <source-file src="src/android/jni/Android.mk"
+                     target-dir="src/main/jni" />
+        <source-file src="src/android/jni/Application.mk"
+                     target-dir="src/main/jni" />
 
         <!-- Gradle configuration -->
         <framework src="src/android/malfrida.gradle"

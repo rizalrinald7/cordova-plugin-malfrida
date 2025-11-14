@@ -605,8 +605,8 @@ bool verify_integrity() {
 
 JNIEXPORT jboolean JNICALL
 Java_cordova_plugin_malfrida_MalfridaPlugin_nativeDetectFrida(
-    JNIEnv *env,
-    jobject thiz
+    JNIEnv*,
+    jobject
 ) {
     bool detected = detect_frida_comprehensive();
     return (jboolean)detected;
@@ -615,22 +615,22 @@ Java_cordova_plugin_malfrida_MalfridaPlugin_nativeDetectFrida(
 JNIEXPORT jstring JNICALL
 Java_cordova_plugin_malfrida_MalfridaPlugin_nativeGetDetectionDetails(
     JNIEnv *env,
-    jobject thiz
+    jobject
 ) {
     char* details = get_detection_details();
     if (!details) {
-        return (*env)->NewStringUTF(env, "{\"error\":\"Failed to get details\"}");
+        return env->NewStringUTF("{\"error\":\"Failed to get details\"}");
     }
 
-    jstring result = (*env)->NewStringUTF(env, details);
+    jstring result = env->NewStringUTF(details);
     free(details);
     return result;
 }
 
 JNIEXPORT void JNICALL
 Java_cordova_plugin_malfrida_MalfridaPlugin_nativeSetLogging(
-    JNIEnv *env,
-    jobject thiz,
+    JNIEnv*,
+    jobject,
     jboolean enabled
 ) {
     g_config.enable_logging = (bool)enabled;
@@ -639,8 +639,8 @@ Java_cordova_plugin_malfrida_MalfridaPlugin_nativeSetLogging(
 
 JNIEXPORT void JNICALL
 Java_cordova_plugin_malfrida_MalfridaPlugin_nativeSetThreshold(
-    JNIEnv *env,
-    jobject thiz,
+    JNIEnv*,
+    jobject,
     jint threshold
 ) {
     g_config.detection_threshold = (int)threshold;
@@ -650,9 +650,9 @@ Java_cordova_plugin_malfrida_MalfridaPlugin_nativeSetThreshold(
 JNIEXPORT jstring JNICALL
 Java_cordova_plugin_malfrida_MalfridaPlugin_nativeGetVersion(
     JNIEnv *env,
-    jobject thiz
+    jobject
 ) {
-    return (*env)->NewStringUTF(env, DETECTOR_VERSION);
+    return env->NewStringUTF(DETECTOR_VERSION);
 }
 
 // ============================================================================

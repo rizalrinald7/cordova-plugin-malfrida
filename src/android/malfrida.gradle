@@ -30,25 +30,23 @@ android {
 
         // External native build settings
         externalNativeBuild {
-            cmake {
-                // CMake arguments
-                arguments "-DANDROID_STL=c++_static",
-                          "-DANDROID_PLATFORM=android-21",
-                          "-DCMAKE_BUILD_TYPE=Release"
+            ndkBuild {
+                // NDK build arguments
+                arguments "NDK_APPLICATION_MK=src/main/jni/Application.mk",
+                          "APP_PLATFORM=android-21",
+                          "APP_OPTIM=release",
+                          "APP_STL=c++_static"
 
-                // C++ flags
-                cppFlags "-std=c++14",
-                         "-fvisibility=hidden",
-                         "-ffunction-sections",
-                         "-fdata-sections",
-                         "-O3"
+                // C++ flags (additional to those in Android.mk)
+                cppFlags "-std=c++14"
 
-                // C flags
-                cFlags "-std=c11",
-                       "-fvisibility=hidden",
-                       "-O3"
+                // C flags (additional to those in Android.mk)
+                cFlags "-std=c11"
 
-                // Additional targets
+                // ABI filters (must match Application.mk)
+                abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+
+                // Additional targets (module names)
                 targets "frida_detector"
             }
         }
@@ -56,9 +54,8 @@ android {
 
     // External native build configuration
     externalNativeBuild {
-        cmake {
-            path "cpp/CMakeLists.txt"
-            version "3.10.2"
+        ndkBuild {
+            path "src/main/jni/Android.mk"
         }
     }
 
@@ -176,8 +173,8 @@ task createProguardRules {
     }
 }
 
-// Run proguard rules creation before pre-build
-preBuild.dependsOn createProguardRules
+// Note: ProGuard rules will be created automatically when needed
+// You can manually run: ./gradlew createProguardRules
 
 // ============================================================================
 // Dependencies (if needed)
@@ -204,14 +201,10 @@ task verifyNativeLibrary {
         }
 
         if (!found) {
-            println "  Warning: No native libraries found. They will be built during compilation."
+            println "ï¿½ Warning: No native libraries found. They will be built during compilation."
         }
     }
 }
-
-// Run verification after assembly
-assembleDebug.finalizedBy verifyNativeLibrary
-assembleRelease.finalizedBy verifyNativeLibrary
 
 // ============================================================================
 // Build Information
@@ -236,8 +229,7 @@ task printBuildInfo {
     }
 }
 
-// Print build info before build starts
-preBuild.dependsOn printBuildInfo
+// Note: You can manually run: ./gradlew printBuildInfo to see build configuration
 
 // ============================================================================
 // Security Notes
