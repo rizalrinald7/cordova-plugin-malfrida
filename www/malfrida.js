@@ -2,13 +2,21 @@
  * Malfrida - Frida Detection Plugin for Cordova
  *
  * Provides comprehensive Frida instrumentation detection for Android applications.
- * Implements multiple detection vectors including:
+ * Implements 11 detection vectors including:
  * - Named pipe detection
  * - Thread name detection
- * - Memory scanning
+ * - Memory mapping scanning
  * - Port scanning
+ * - Memory tampering detection
  * - Process detection
- * - And more...
+ * - Ptrace detection
+ * - Library symbol scanning
+ * - Environment variables (spawn-specific)
+ * - Parent process check (spawn-specific)
+ * - Spawn timing detection (spawn-specific)
+ *
+ * Features direct syscalls to bypass libc hooks and early detection in native
+ * constructor to prevent Frida spawn mode attacks (frida -U -f).
  *
  * @module cordova-plugin-malfrida
  */
@@ -200,7 +208,8 @@ var Malfrida = {
      *
      * @param {Object} config - Configuration options
      * @param {boolean} config.enableLogging - Enable debug logging (default: false)
-     * @param {number} config.detectionThreshold - Minimum detection score to trigger (default: 2)
+     * @param {number} config.detectionThreshold - Minimum detection score to trigger (default: 2, max: 11)
+     * @param {boolean} config.exitOnDetection - Exit app immediately if Frida detected (default: false)
      * @param {Function} successCallback - Called on success
      * @param {Function} errorCallback - Called on error
      *
@@ -208,9 +217,21 @@ var Malfrida = {
      * cordova.plugins.malfrida.configure(
      *   {
      *     enableLogging: true,
-     *     detectionThreshold: 2
+     *     detectionThreshold: 2,
+     *     exitOnDetection: false
      *   },
      *   function() { console.log('Configured'); },
+     *   function(err) { console.error(err); }
+     * );
+     *
+     * @example
+     * // Aggressive mode - exit immediately on any detection
+     * cordova.plugins.malfrida.configure(
+     *   {
+     *     detectionThreshold: 1,
+     *     exitOnDetection: true
+     *   },
+     *   function() { console.log('Aggressive mode enabled'); },
      *   function(err) { console.error(err); }
      * );
      */

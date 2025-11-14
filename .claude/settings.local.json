@@ -5,7 +5,9 @@
       "mcp__context7__resolve-library-id",
       "mcp__context7__get-library-docs",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:cordova.apache.org)"
+      "WebFetch(domain:cordova.apache.org)",
+      "WebFetch(domain:blog.nviso.eu)",
+      "WebFetch(domain:reverseengineering.stackexchange.com)"
     ],
     "deny": [],
     "ask": []

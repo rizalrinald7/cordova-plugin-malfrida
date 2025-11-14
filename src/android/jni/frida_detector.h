@@ -13,6 +13,9 @@
  * 6. Process Detection - Scan /proc for frida-server process
  * 7. Ptrace Detection - Check if being traced/debugged
  * 8. Library Symbol Scanning - Check for Frida symbols in memory
+ * 9. Environment Variables - Check for FRIDA_* env vars (spawn-specific)
+ * 10. Parent Process Check - Verify parent isn't Frida (spawn-specific)
+ * 11. Spawn Timing Check - Detect suspicious startup patterns (spawn-specific)
  *
  * @author Security Team
  * @version 1.0.0
@@ -224,6 +227,16 @@ Java_cordova_plugin_malfrida_MalfridaPlugin_nativeSetThreshold(
     JNIEnv *env,
     jobject thiz,
     jint threshold
+);
+
+/**
+ * JNI: Set exit on detection
+ */
+JNIEXPORT void JNICALL
+Java_cordova_plugin_malfrida_MalfridaPlugin_nativeSetExitOnDetection(
+    JNIEnv *env,
+    jobject thiz,
+    jboolean enabled
 );
 
 /**

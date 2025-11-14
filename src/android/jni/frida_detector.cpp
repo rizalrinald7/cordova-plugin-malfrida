@@ -38,7 +38,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // Detection results storage
-static int detection_results[8] = {0};
+static int detection_results[11] = {0};
 static pthread_mutex_t results_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Global configuration
@@ -47,6 +47,11 @@ detection_config_t g_config = {
     .detection_threshold = 2,
     .exit_on_detection = false
 };
+
+// Early detection (constructor) configuration
+// This runs before Java can configure, so use conservative settings
+static const int EARLY_DETECTION_THRESHOLD = 1; // More aggressive - any single detection triggers
+static bool early_detection_enabled = true;
 
 // Encrypted strings (XOR with 0x42)
 static const unsigned char ENC_FRIDA[] = {0x24, 0x30, 0x2E, 0x26, 0x2C}; // "frida"
@@ -127,7 +132,8 @@ bool detect_frida_pipes() {
         snprintf(link_path, sizeof(link_path), "%s/%s", fd_dir, entry->d_name);
 
         char target[512];
-        ssize_t len = readlink(link_path, target, sizeof(target) - 1);
+        // Use direct syscall to bypass potential Frida hooks
+        ssize_t len = syscall_readlink(link_path, target, sizeof(target) - 1);
 
         if (len > 0) {
             target[len] = '\0';
@@ -179,10 +185,13 @@ bool detect_frida_threads() {
         char comm_path[512];
         snprintf(comm_path, sizeof(comm_path), "%s/%s/comm", task_dir, entry->d_name);
 
-        FILE* fp = fopen(comm_path, "r");
-        if (fp) {
+        // Use direct syscall to bypass potential Frida hooks
+        int fd = syscall_open(comm_path, O_RDONLY, 0);
+        if (fd >= 0) {
             char thread_name[256];
-            if (fgets(thread_name, sizeof(thread_name), fp)) {
+            ssize_t bytes_read = syscall_read(fd, thread_name, sizeof(thread_name) - 1);
+            if (bytes_read > 0) {
+                thread_name[bytes_read] = '\0';
                 // Remove newline
                 thread_name[strcspn(thread_name, "\n")] = '\0';
 
@@ -194,11 +203,11 @@ bool detect_frida_threads() {
 
                     LOGW("Detected Frida thread: %s", thread_name);
                     detected = true;
-                    fclose(fp);
+                    syscall_close(fd);
                     break;
                 }
             }
-            fclose(fp);
+            syscall_close(fd);
         }
     }
 
@@ -214,36 +223,50 @@ bool detect_frida_threads() {
 bool detect_frida_memory_maps() {
     LOGD("Running memory mapping detection...");
 
-    FILE* fp = fopen("/proc/self/maps", "r");
-    if (!fp) {
+    // Use direct syscall to bypass potential Frida hooks
+    int fd = syscall_open("/proc/self/maps", O_RDONLY, 0);
+    if (fd < 0) {
         LOGD("Failed to open /proc/self/maps");
         return false;
     }
 
     bool detected = false;
+    char buffer[4096];
     char line[1024];
+    int line_pos = 0;
     char frida_str[16];
     decrypt_string(ENC_FRIDA, frida_str, 5, 0x42);
 
-    while (fgets(line, sizeof(line), fp)) {
-        // Convert to lowercase for comparison
-        char line_lower[1024];
-        safe_strcpy(line_lower, line, sizeof(line_lower));
+    ssize_t bytes_read;
+    while ((bytes_read = syscall_read(fd, buffer, sizeof(buffer))) > 0) {
+        for (ssize_t i = 0; i < bytes_read; i++) {
+            if (buffer[i] == '\n' || line_pos >= (int)sizeof(line) - 1) {
+                line[line_pos] = '\0';
 
-        // Check for frida-agent, frida-gadget, LIBFRIDA
-        if (contains_string(line_lower, frida_str) ||
-            contains_string(line, "LIBFRIDA") ||
-            contains_string(line_lower, "frida-agent") ||
-            contains_string(line_lower, "frida-gadget") ||
-            contains_string(line_lower, "frida.so")) {
+                // Convert to lowercase for comparison
+                char line_lower[1024];
+                safe_strcpy(line_lower, line, sizeof(line_lower));
 
-            LOGW("Detected Frida in memory maps: %s", line);
-            detected = true;
-            break;
+                // Check for frida-agent, frida-gadget, LIBFRIDA
+                if (contains_string(line_lower, frida_str) ||
+                    contains_string(line, "LIBFRIDA") ||
+                    contains_string(line_lower, "frida-agent") ||
+                    contains_string(line_lower, "frida-gadget") ||
+                    contains_string(line_lower, "frida.so")) {
+
+                    LOGW("Detected Frida in memory maps: %s", line);
+                    detected = true;
+                    break;
+                }
+                line_pos = 0;
+            } else {
+                line[line_pos++] = buffer[i];
+            }
         }
+        if (detected) break;
     }
 
-    fclose(fp);
+    syscall_close(fd);
     LOGD("Memory mapping detection: %s", detected ? "DETECTED" : "clean");
     return detected;
 }
@@ -320,28 +343,40 @@ bool detect_frida_ports() {
 bool detect_memory_tampering() {
     LOGD("Running memory tampering detection...");
 
-    // This is a simplified version
-    // In production, you would compare actual executable sections
-    FILE* fp = fopen("/proc/self/maps", "r");
-    if (!fp) return false;
+    // Use direct syscall to bypass potential Frida hooks
+    int fd = syscall_open("/proc/self/maps", O_RDONLY, 0);
+    if (fd < 0) return false;
 
     bool detected = false;
+    char buffer[4096];
     char line[1024];
+    int line_pos = 0;
 
-    while (fgets(line, sizeof(line), fp)) {
-        // Check for suspicious rwxp permissions (read-write-execute)
-        // This can indicate code that was modified in memory
-        if (strstr(line, "rwxp")) {
-            // Check if it's in executable regions (not stack/heap)
-            if (strstr(line, ".so") || strstr(line, ".dex")) {
-                LOGW("Detected suspicious RWX memory region: %s", line);
-                detected = true;
-                break;
+    ssize_t bytes_read;
+    while ((bytes_read = syscall_read(fd, buffer, sizeof(buffer))) > 0) {
+        for (ssize_t i = 0; i < bytes_read; i++) {
+            if (buffer[i] == '\n' || line_pos >= (int)sizeof(line) - 1) {
+                line[line_pos] = '\0';
+
+                // Check for suspicious rwxp permissions (read-write-execute)
+                // This can indicate code that was modified in memory
+                if (strstr(line, "rwxp")) {
+                    // Check if it's in executable regions (not stack/heap)
+                    if (strstr(line, ".so") || strstr(line, ".dex")) {
+                        LOGW("Detected suspicious RWX memory region: %s", line);
+                        detected = true;
+                        break;
+                    }
+                }
+                line_pos = 0;
+            } else {
+                line[line_pos++] = buffer[i];
             }
         }
+        if (detected) break;
     }
 
-    fclose(fp);
+    syscall_close(fd);
     LOGD("Memory tampering detection: %s", detected ? "DETECTED" : "clean");
     return detected;
 }
@@ -371,10 +406,14 @@ bool detect_frida_process() {
         char cmdline_path[512];
         snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%s/cmdline", entry->d_name);
 
-        FILE* fp = fopen(cmdline_path, "r");
-        if (fp) {
+        // Use direct syscall to bypass potential Frida hooks
+        int fd = syscall_open(cmdline_path, O_RDONLY, 0);
+        if (fd >= 0) {
             char cmdline[512];
-            if (fgets(cmdline, sizeof(cmdline), fp)) {
+            ssize_t bytes_read = syscall_read(fd, cmdline, sizeof(cmdline) - 1);
+            if (bytes_read > 0) {
+                cmdline[bytes_read] = '\0';
+
                 // Check for frida-server, frida-inject
                 if (contains_string(cmdline, frida_str) ||
                     contains_string(cmdline, "frida-server") ||
@@ -382,11 +421,11 @@ bool detect_frida_process() {
 
                     LOGW("Detected Frida process: %s", cmdline);
                     detected = true;
-                    fclose(fp);
+                    syscall_close(fd);
                     break;
                 }
             }
-            fclose(fp);
+            syscall_close(fd);
         }
     }
 
@@ -402,29 +441,43 @@ bool detect_frida_process() {
 bool detect_ptrace() {
     LOGD("Running ptrace detection...");
 
-    FILE* fp = fopen("/proc/self/status", "r");
-    if (!fp) {
+    // Use direct syscall to bypass potential Frida hooks
+    int fd = syscall_open("/proc/self/status", O_RDONLY, 0);
+    if (fd < 0) {
         LOGD("Failed to open /proc/self/status");
         return false;
     }
 
     bool detected = false;
+    char buffer[4096];
     char line[256];
+    int line_pos = 0;
 
-    while (fgets(line, sizeof(line), fp)) {
-        if (strncmp(line, "TracerPid:", 10) == 0) {
-            int tracer_pid = 0;
-            sscanf(line + 10, "%d", &tracer_pid);
+    ssize_t bytes_read;
+    while ((bytes_read = syscall_read(fd, buffer, sizeof(buffer))) > 0) {
+        for (ssize_t i = 0; i < bytes_read; i++) {
+            if (buffer[i] == '\n' || line_pos >= (int)sizeof(line) - 1) {
+                line[line_pos] = '\0';
 
-            if (tracer_pid != 0) {
-                LOGW("Detected tracer process: TracerPid=%d", tracer_pid);
-                detected = true;
+                if (strncmp(line, "TracerPid:", 10) == 0) {
+                    int tracer_pid = 0;
+                    sscanf(line + 10, "%d", &tracer_pid);
+
+                    if (tracer_pid != 0) {
+                        LOGW("Detected tracer process: TracerPid=%d", tracer_pid);
+                        detected = true;
+                    }
+                    break;
+                }
+                line_pos = 0;
+            } else {
+                line[line_pos++] = buffer[i];
             }
-            break;
         }
+        if (detected || strstr(line, "TracerPid:")) break;
     }
 
-    fclose(fp);
+    syscall_close(fd);
     LOGD("Ptrace detection: %s", detected ? "DETECTED" : "clean");
     return detected;
 }
@@ -436,31 +489,211 @@ bool detect_ptrace() {
 bool detect_frida_symbols() {
     LOGD("Running symbol scanning detection...");
 
-    // This is a simplified implementation
-    // Full implementation would parse ELF symbols from loaded libraries
-    FILE* fp = fopen("/proc/self/maps", "r");
-    if (!fp) return false;
+    // Use direct syscall to bypass potential Frida hooks
+    int fd = syscall_open("/proc/self/maps", O_RDONLY, 0);
+    if (fd < 0) return false;
 
     bool detected = false;
+    char buffer[4096];
     char line[1024];
+    int line_pos = 0;
     char frida_str[16];
     decrypt_string(ENC_FRIDA, frida_str, 5, 0x42);
 
-    // Look for suspicious library names
-    while (fgets(line, sizeof(line), fp)) {
-        if (contains_string(line, "gum-") ||
-            contains_string(line, "frida-") ||
-            contains_string(line, "gadget")) {
+    ssize_t bytes_read;
+    while ((bytes_read = syscall_read(fd, buffer, sizeof(buffer))) > 0) {
+        for (ssize_t i = 0; i < bytes_read; i++) {
+            if (buffer[i] == '\n' || line_pos >= (int)sizeof(line) - 1) {
+                line[line_pos] = '\0';
 
-            LOGW("Detected suspicious library: %s", line);
-            detected = true;
-            break;
+                // Look for suspicious library names
+                if (contains_string(line, "gum-") ||
+                    contains_string(line, "frida-") ||
+                    contains_string(line, "gadget")) {
+
+                    LOGW("Detected suspicious library: %s", line);
+                    detected = true;
+                    break;
+                }
+                line_pos = 0;
+            } else {
+                line[line_pos++] = buffer[i];
+            }
+        }
+        if (detected) break;
+    }
+
+    syscall_close(fd);
+    LOGD("Symbol scanning detection: %s", detected ? "DETECTED" : "clean");
+    return detected;
+}
+
+// ============================================================================
+// DETECTION METHOD 9: ENVIRONMENT VARIABLES (Spawn-Specific)
+// ============================================================================
+
+bool detect_frida_environment() {
+    LOGD("Running environment detection...");
+
+    // Use direct syscall to bypass potential Frida hooks
+    int fd = syscall_open("/proc/self/environ", O_RDONLY, 0);
+    if (fd < 0) {
+        LOGD("Failed to open /proc/self/environ");
+        return false;
+    }
+
+    bool detected = false;
+    char buffer[4096];
+    ssize_t bytes_read = syscall_read(fd, buffer, sizeof(buffer) - 1);
+
+    if (bytes_read > 0) {
+        buffer[bytes_read] = '\0';
+
+        // Environment variables are null-separated
+        // Check for FRIDA_*, LD_PRELOAD, and other suspicious variables
+        for (ssize_t i = 0; i < bytes_read; i++) {
+            if (buffer[i] == '\0' && i + 1 < bytes_read) {
+                char* env_var = &buffer[i + 1];
+
+                // Check for Frida-related environment variables
+                if (strncmp(env_var, "FRIDA", 5) == 0 ||
+                    strstr(env_var, "frida") != NULL ||
+                    (strncmp(env_var, "LD_PRELOAD=", 11) == 0 &&
+                     strstr(env_var, "frida") != NULL)) {
+
+                    LOGW("Detected Frida environment variable: %s", env_var);
+                    detected = true;
+                    break;
+                }
+            }
         }
     }
 
-    fclose(fp);
-    LOGD("Symbol scanning detection: %s", detected ? "DETECTED" : "clean");
+    syscall_close(fd);
+    LOGD("Environment detection: %s", detected ? "DETECTED" : "clean");
     return detected;
+}
+
+// ============================================================================
+// DETECTION METHOD 10: PARENT PROCESS CHECK (Spawn-Specific)
+// ============================================================================
+
+bool detect_parent_process() {
+    LOGD("Running parent process detection...");
+
+    // Read /proc/self/stat to get PPID
+    int fd = syscall_open("/proc/self/stat", O_RDONLY, 0);
+    if (fd < 0) {
+        LOGD("Failed to open /proc/self/stat");
+        return false;
+    }
+
+    char buffer[1024];
+    ssize_t bytes_read = syscall_read(fd, buffer, sizeof(buffer) - 1);
+    syscall_close(fd);
+
+    if (bytes_read <= 0) return false;
+    buffer[bytes_read] = '\0';
+
+    // Parse PPID from stat (4th field after closing parenthesis)
+    char* end_comm = strrchr(buffer, ')');
+    if (!end_comm) return false;
+
+    int ppid = 0;
+    sscanf(end_comm + 2, "%*c %d", &ppid);
+
+    if (ppid <= 1) return false; // Skip if PPID is init
+
+    // Check parent process cmdline
+    char parent_cmdline_path[256];
+    snprintf(parent_cmdline_path, sizeof(parent_cmdline_path), "/proc/%d/cmdline", ppid);
+
+    fd = syscall_open(parent_cmdline_path, O_RDONLY, 0);
+    if (fd < 0) return false;
+
+    char parent_cmdline[512];
+    bytes_read = syscall_read(fd, parent_cmdline, sizeof(parent_cmdline) - 1);
+    syscall_close(fd);
+
+    if (bytes_read > 0) {
+        parent_cmdline[bytes_read] = '\0';
+
+        char frida_str[16];
+        decrypt_string(ENC_FRIDA, frida_str, 5, 0x42);
+
+        // Check for frida, gdb, lldb, or other debugging tools
+        if (contains_string(parent_cmdline, frida_str) ||
+            contains_string(parent_cmdline, "frida-server") ||
+            contains_string(parent_cmdline, "frida-inject") ||
+            contains_string(parent_cmdline, "gdbserver") ||
+            contains_string(parent_cmdline, "lldb-server")) {
+
+            LOGW("Detected suspicious parent process: %s (PID: %d)", parent_cmdline, ppid);
+            return true;
+        }
+    }
+
+    LOGD("Parent process detection: clean");
+    return false;
+}
+
+// ============================================================================
+// DETECTION METHOD 11: SPAWN TIMING CHECK (Spawn-Specific)
+// ============================================================================
+
+bool detect_spawn_timing() {
+    LOGD("Running spawn timing detection...");
+
+    // Check if process was started very recently with threads already present
+    // This can indicate Frida spawn mode where the process is suspended
+
+    int fd = syscall_open("/proc/self/stat", O_RDONLY, 0);
+    if (fd < 0) return false;
+
+    char buffer[1024];
+    ssize_t bytes_read = syscall_read(fd, buffer, sizeof(buffer) - 1);
+    syscall_close(fd);
+
+    if (bytes_read <= 0) return false;
+    buffer[bytes_read] = '\0';
+
+    // Parse process start time (field 22)
+    char* end_comm = strrchr(buffer, ')');
+    if (!end_comm) return false;
+
+    unsigned long long starttime = 0;
+    int field_count = 0;
+    char* ptr = end_comm + 2;
+
+    // Skip to field 22 (starttime)
+    while (*ptr && field_count < 19) {
+        if (*ptr == ' ') field_count++;
+        ptr++;
+    }
+    sscanf(ptr, "%llu", &starttime);
+
+    // Count threads
+    DIR* task_dir = opendir("/proc/self/task");
+    int thread_count = 0;
+    if (task_dir) {
+        struct dirent* entry;
+        while ((entry = readdir(task_dir)) != NULL) {
+            if (entry->d_name[0] != '.') thread_count++;
+        }
+        closedir(task_dir);
+    }
+
+    // If process is very young (<100ms uptime) but has many threads (>10),
+    // it might indicate spawn mode with Frida already injected
+    // This is a heuristic and may have false positives
+    if (thread_count > 10) {
+        LOGW("Suspicious thread count at early startup: %d threads", thread_count);
+        LOGD("Spawn timing detection: SUSPICIOUS");
+        return true;
+    }
+
+    LOGD("Spawn timing detection: clean (threads: %d)", thread_count);
+    return false;
 }
 
 // ============================================================================
@@ -472,7 +705,7 @@ bool detect_frida_comprehensive() {
 
     pthread_mutex_lock(&results_mutex);
 
-    // Run all detection methods
+    // Run all detection methods (8 original + 3 spawn-specific)
     detection_results[0] = detect_frida_pipes() ? 1 : 0;
     detection_results[1] = detect_frida_threads() ? 1 : 0;
     detection_results[2] = detect_frida_memory_maps() ? 1 : 0;
@@ -482,9 +715,14 @@ bool detect_frida_comprehensive() {
     detection_results[6] = detect_ptrace() ? 1 : 0;
     detection_results[7] = detect_frida_symbols() ? 1 : 0;
 
+    // NEW: Spawn-specific detection methods
+    detection_results[8] = detect_frida_environment() ? 1 : 0;
+    detection_results[9] = detect_parent_process() ? 1 : 0;
+    detection_results[10] = detect_spawn_timing() ? 1 : 0;
+
     // Calculate detection score
     int score = 0;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 11; i++) {
         score += detection_results[i];
     }
 
@@ -511,19 +749,19 @@ bool detect_frida_comprehensive() {
 char* get_detection_details() {
     pthread_mutex_lock(&results_mutex);
 
-    // Build JSON response
-    char* json = (char*)malloc(1024);
+    // Build JSON response (increased size for new fields)
+    char* json = (char*)malloc(2048);
     if (!json) {
         pthread_mutex_unlock(&results_mutex);
         return NULL;
     }
 
     int score = 0;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 11; i++) {
         score += detection_results[i];
     }
 
-    snprintf(json, 1024,
+    snprintf(json, 2048,
         "{"
         "\"pipesDetected\":%s,"
         "\"threadsDetected\":%s,"
@@ -533,6 +771,9 @@ char* get_detection_details() {
         "\"processDetected\":%s,"
         "\"ptraceDetected\":%s,"
         "\"symbolsDetected\":%s,"
+        "\"environmentDetected\":%s,"
+        "\"parentProcessDetected\":%s,"
+        "\"spawnTimingDetected\":%s,"
         "\"score\":%d,"
         "\"threshold\":%d,"
         "\"detected\":%s"
@@ -545,6 +786,9 @@ char* get_detection_details() {
         detection_results[5] ? "true" : "false",
         detection_results[6] ? "true" : "false",
         detection_results[7] ? "true" : "false",
+        detection_results[8] ? "true" : "false",
+        detection_results[9] ? "true" : "false",
+        detection_results[10] ? "true" : "false",
         score,
         g_config.detection_threshold,
         (score >= g_config.detection_threshold) ? "true" : "false"
@@ -647,6 +891,16 @@ Java_cordova_plugin_malfrida_MalfridaPlugin_nativeSetThreshold(
     LOGD("Detection threshold set to %d", threshold);
 }
 
+JNIEXPORT void JNICALL
+Java_cordova_plugin_malfrida_MalfridaPlugin_nativeSetExitOnDetection(
+    JNIEnv*,
+    jobject,
+    jboolean enabled
+) {
+    g_config.exit_on_detection = (bool)enabled;
+    LOGD("Exit on detection %s", enabled ? "enabled" : "disabled");
+}
+
 JNIEXPORT jstring JNICALL
 Java_cordova_plugin_malfrida_MalfridaPlugin_nativeGetVersion(
     JNIEnv *env,
@@ -656,12 +910,48 @@ Java_cordova_plugin_malfrida_MalfridaPlugin_nativeGetVersion(
 }
 
 // ============================================================================
+// EARLY DETECTION (runs in constructor)
+// ============================================================================
+
+/**
+ * Early detection for spawn mode - runs immediately when library loads
+ * This is critical for preventing Frida spawn attacks (frida -U -f)
+ * Runs before Java initialization, so configuration is hardcoded
+ */
+static void early_spawn_detection() {
+    if (!early_detection_enabled) return;
+
+    LOGI("Running early spawn detection (constructor)...");
+
+    int score = 0;
+
+    // Run critical spawn-specific checks only
+    // These are fast and have low false-positive rates
+    if (detect_frida_environment()) score++;
+    if (detect_parent_process()) score++;
+    if (detect_frida_threads()) score++;
+
+    if (score >= EARLY_DETECTION_THRESHOLD) {
+        LOGE("CRITICAL SECURITY ALERT: Frida spawn detected in constructor!");
+        LOGE("Score: %d/%d - Terminating immediately", score, EARLY_DETECTION_THRESHOLD);
+        // Exit immediately - prevent any app code from running
+        _exit(1);
+    }
+
+    LOGI("Early spawn detection passed (score: %d/%d)", score, EARLY_DETECTION_THRESHOLD);
+}
+
+// ============================================================================
 // LIBRARY INITIALIZATION
 // ============================================================================
 
 __attribute__((constructor))
 static void on_load() {
     init_detector();
+
+    // Run early spawn detection immediately
+    // This prevents Frida from instrumenting the app in spawn mode
+    early_spawn_detection();
 }
 
 __attribute__((destructor))

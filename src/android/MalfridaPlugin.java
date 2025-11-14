@@ -59,29 +59,25 @@ public class MalfridaPlugin extends CordovaPlugin {
     private native String nativeGetDetectionDetails();
     private native void nativeSetLogging(boolean enabled);
     private native void nativeSetThreshold(int threshold);
+    private native void nativeSetExitOnDetection(boolean enabled);
     private native String nativeGetVersion();
 
     /**
      * Plugin initialization - called when plugin loads
-     * Starts auto-monitoring as per user configuration
+     * Starts auto-monitoring immediately (no delay for spawn mode prevention)
      */
     @Override
     public void pluginInitialize() {
         super.pluginInitialize();
         logDebug("Plugin initialized - version " + PLUGIN_VERSION);
 
-        // Auto-start monitoring (as per user preference)
+        // Auto-start monitoring immediately
         // Default interval: 5 seconds
+        // NOTE: Early detection already ran in native constructor
         cordova.getThreadPool().execute(new Runnable() {
             @Override
             public void run() {
-                try {
-                    // Small delay to ensure app is fully initialized
-                    Thread.sleep(2000);
-                    startAutoMonitoring();
-                } catch (InterruptedException e) {
-                    logDebug("Auto-start interrupted: " + e.getMessage());
-                }
+                startAutoMonitoring();
             }
         });
     }
@@ -301,6 +297,12 @@ public class MalfridaPlugin extends CordovaPlugin {
                 detectionThreshold = config.getInt("detectionThreshold");
                 nativeSetThreshold(detectionThreshold);
                 logDebug("Detection threshold set: " + detectionThreshold);
+            }
+
+            if (config.has("exitOnDetection")) {
+                boolean exitOnDetection = config.getBoolean("exitOnDetection");
+                nativeSetExitOnDetection(exitOnDetection);
+                logDebug("Exit on detection: " + exitOnDetection);
             }
 
             callbackContext.success("Configuration updated");
